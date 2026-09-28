@@ -6,48 +6,38 @@ import re
 from datetime import datetime
 from collections import Counter
 
-# Page Configuration
-st.set_page_config(
-    page_title="5조 - 학교 급식 데이터 분석",
-    page_icon="🍱",
-    layout="wide"
-)
+st.set_page_config(page_title="5조 - 학교 급식 데이터 분석", page_icon="🍱", layout="wide")
 
 # ---------------------------------------------------------
-# API Helper Functions (Cached for better performance)
+# [중요] NEIS API 키 설정
+# open.neis.go.kr 에서 무료 발급받은 인증키를 아래에 넣으세요.
+# 인증키가 없으면 API 제약으로 인해 최근 5일치 데이터만 조회됩니다.
 # ---------------------------------------------------------
-NEIS_KEY = "" # API 키 없이도 하루 기본 제한 내 요청 가능 (필요 시 부여받은 키 입력)
+NEIS_KEY = ""  # 예: "7d11d4f9fde146f29d72b4d314ba3c27"
 
 @st.cache_data(ttl=3600)
 def fetch_school_info(school_name):
-    """학교 이름을 검색하여 교육청 코드와 학교 코드를 가져오는 함수"""
     url = "https://open.neis.go.kr/hub/schoolInfo"
-    params = {
-        "Type": "json",
-        "SCHUL_NM": school_name
-    }
+    params = {"Type": "json", "SCHUL_NM": school_name}
     if NEIS_KEY:
         params["KEY"] = NEIS_KEY
 
     try:
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        if "schoolInfo" in data:
-            rows = data["schoolInfo"][1]["row"]
-            return rows
-    except Exception as e:
-        st.error(f"학교 정보 조회 중 오류가 발생했습니다: {e}")
+        res = requests.get(url, params=params, timeout=10).json()
+        if "schoolInfo" in res:
+            return res["schoolInfo"][1]["row"]
+    except Exception:
+        pass
     return []
 
 @st.cache_data(ttl=3600)
 def fetch_meal_data(ofcdc_code, school_code, from_ymd, to_ymd):
-    """특정 학교의 중식 데이터를 가져오는 함수"""
     url = "https://open.neis.go.kr/hub/mealServiceDietInfo"
     params = {
         "Type": "json",
         "ATPT_OFCDC_SC_CODE": ofcdc_code,
         "SD_SCHUL_CODE": school_code,
-        "MMEAL_SC_CODE": "2",  # 2: 중식
+        "MMEAL_SC_CODE": "2",  # 중식
         "MLSV_FROM_YMD": from_ymd,
         "MLSV_TO_YMD": to_ymd,
         "pSize": 1000
@@ -56,95 +46,65 @@ def fetch_meal_data(ofcdc_code, school_code, from_ymd, to_ymd):
         params["KEY"] = NEIS_KEY
 
     try:
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        if "mealServiceDietInfo" in data:
-            return data["mealServiceDietInfo"][1]["row"]
-    except Exception as e:
-        st.error(f"급식 데이터 조회 중 오류가 발생했습니다: {e}")
+        res = requests.get(url, params=params, timeout=10).json()
+        if "mealServiceDietInfo" in res:
+            return res["mealServiceDietInfo"][1]["row"]
+    except Exception:
+        pass
     return []
 
 def clean_menu_item(item):
-    """메뉴명에서 괄호 안 알레르기 번호 및 특수문자 제거"""
-    # 괄호 안 알레르기 번호 제거 (예: (1.2.5.6) -> "")
-    item = re.sub(r'\(.*?\)', '', item)
-    # 수식어/공백 정리
+    """알레르기 번호, 특수문자, 원산지 표기 등 제거"""
+    item = re.sub(r'\(.*?\)', '', item)  # 괄호 안 알레르기 번호 제거
+    item = re.sub(r'[*.:@#]', '', item)  # 특수문자 제거
     item = re.sub(r'\s+', ' ', item).strip()
     return item
 
 def parse_calories(cal_str):
-    """'685.2 Kcal' 형태의 문자열에서 실수 숫자만 추출"""
     if not cal_str:
         return None
     match = re.search(r'[\d.]+', str(cal_str))
-    return float(match.group()) if match else None
+    if match:
+        val = float(match.group())
+        return val if val > 100 else None  # 100kcal 이하 비정상 데이터 제외
+    return None
 
-# ---------------------------------------------------------
-# Streamlit UI Layout
-# ---------------------------------------------------------
+# UI 구성
 st.title("🍱 우리 학교 vs 근처 학교 급식 데이터 비교 분석")
-st.caption("2025년 3월부터 현재까지의 중식 데이터를 바탕으로 칼로리와 인기 메뉴를 분석합니다.")
 
-# 사이드바 - 기본 학교 및 학교 추가 검색
-st.sidebar.header("🔍 학교 선택 및 검색")
+if not NEIS_KEY:
+    st.warning("⚠️ **NEIS API 인증키가 설정되지 않았습니다.** 인증키 없이 조회 시 API 제약에 따라 **학교당 최근 5일치 데이터만 조회**되어 통계가 불정확할 수 있습니다.")
 
-# 기본 비교 대상 목록
-default_preset_schools = [
-    "송탄고등학교",
-    "효명고등학교",
-    "태법고등학교",
-    "평택고등학교",
-    "신한고등학교"
-]
+st.sidebar.header("🔍 학교 선택")
+default_preset_schools = ["송탄고등학교", "효명고등학교", "태법고등학교", "평택고등학교", "신한고등학교"]
 
-# 새로 검색해서 추가할 학교
-search_query = st.sidebar.text_input("목록에 없는 학교 검색 (예: 은혜고등학교)", "")
-if search_query:
-    searched_results = fetch_school_info(search_query)
-    if searched_results:
-        for r in searched_results:
-            nm = r["SCHUL_NM"]
-            if nm not in default_preset_schools:
-                default_preset_schools.append(nm)
-        st.sidebar.success(f"검색 결과가 선택 목록에 추가되었습니다!")
-    else:
-        st.sidebar.warning("검색 결과가 없습니다.")
-
-# [필수 요구사항 1] 멀티 셀렉트 (송탄고등학교 기본값)
 selected_schools = st.sidebar.multiselect(
-    "비교할 학교를 3개 이상 선택하세요:",
+    "비교할 학교를 선택하세요 (최소 3개 권장):",
     options=default_preset_schools,
     default=["송탄고등학교", "효명고등학교", "평택고등학교"]
 )
 
-if len(selected_schools) < 3:
-    st.warning("⚠️ 정확한 비교 분석을 위해 최소 3개 이상의 학교를 선택해 주세요!")
+# 기본 반찬 제외 옵션 (밥, 김치 제외 기능)
+filter_basic_side = st.sidebar.checkbox("자주 나오는 기본 반찬(밥/김치류) 제외하고 메뉴 분석", value=True)
+basic_keywords = ["김치", "밥", "깍두기", "쌀밥", "현미밥", "잡곡밥"]
 
-# 데이터 조회 기간 설정 (2025년 3월 1일 ~ 오늘)
 start_date = "20250301"
 end_date = datetime.now().strftime("%Y%m%d")
 
-# ---------------------------------------------------------
-# Data Fetching & Processing
-# ---------------------------------------------------------
 if selected_schools:
     all_meals = []
     all_menus = {}
 
-    with st.spinner("NEIS API에서 급식 데이터를 불러오는 중입니다..."):
+    with st.spinner("데이터를 분석하는 중입니다..."):
         for school_name in selected_schools:
-            school_info = fetch_school_info(school_name)
-            if not school_info:
-                st.error(f"'{school_name}'의 정보를 찾지 못했습니다.")
+            info = fetch_school_info(school_name)
+            if not info:
                 continue
             
-            # 검색 결과 중 첫번째 학교 사용
-            info = school_info[0]
-            ofcdc_code = info["ATPT_OFCDC_SC_CODE"]
-            school_code = info["SD_SCHUL_CODE"]
+            ofcdc_code = info[0]["ATPT_OFCDC_SC_CODE"]
+            school_code = info[0]["SD_SCHUL_CODE"]
             
             meal_rows = fetch_meal_data(ofcdc_code, school_code, start_date, end_date)
-            
             school_menu_list = []
             
             for row in meal_rows:
@@ -160,13 +120,15 @@ if selected_schools:
                         "칼로리": cal_val
                     })
                 
-                # 메뉴 처리
                 raw_ddish = row.get("DDISH_NM", "")
                 if raw_ddish:
                     items = raw_ddish.split("<br/>")
                     for item in items:
                         cleaned = clean_menu_item(item)
-                        if cleaned and len(cleaned) > 1:  # 단어 길이 2 이상만 수집
+                        if len(cleaned) > 1:
+                            # 기본 반찬 제외 옵션 적용
+                            if filter_basic_side and any(k in cleaned for k in basic_keywords):
+                                continue
                             school_menu_list.append(cleaned)
             
             all_menus[school_name] = school_menu_list
@@ -174,78 +136,58 @@ if selected_schools:
     df_meals = pd.DataFrame(all_meals)
 
     if not df_meals.empty:
-        # ---------------------------------------------------------
-        # Section 1: 요약 메트릭
-        # ---------------------------------------------------------
-        st.subheader("📊 1년간 급식 평균 칼로리 요약")
+        # 1. 수집된 데이터 건수 확인
+        st.info(f"💡 총 **{len(df_meals)}일치** 급식 데이터를 기반으로 분석했습니다.")
+
+        # 2. 평균 칼로리 요약
+        st.subheader("📊 학교별 평균 칼로리")
         avg_cal_by_school = df_meals.groupby("학교명")["칼로리"].mean().round(1).reset_index()
         avg_cal_by_school.columns = ["학교명", "평균 칼로리(kcal)"]
 
         cols = st.columns(len(selected_schools))
         for idx, school in enumerate(selected_schools):
-            school_cal = avg_cal_by_school[avg_cal_by_school["학교명"] == school]
-            if not school_cal.empty:
-                val = school_cal["평균 칼로리(kcal)"].values[0]
-                cols[idx % len(cols)].metric(label=school, value=f"{val} kcal")
+            school_df = df_meals[df_meals["학교명"] == school]
+            if not school_df.empty:
+                val = round(school_df["칼로리"].mean(), 1)
+                cnt = len(school_df)
+                cols[idx % len(cols)].metric(label=school, value=f"{val} kcal", delta=f"총 {cnt}일 데이터")
 
         st.markdown("---")
 
-        # ---------------------------------------------------------
-        # Section 2: [필수 요구사항 3] Plotly 그래프 시각화
-        # ---------------------------------------------------------
-        tab1, tab2 = st.tabs(["📈 월별 평균 칼로리 추이", "📊 전체 기간 평균 칼로리 비교"])
+        # 3. Plotly 그래프
+        tab1, tab2 = st.tabs(["📈 월별 평균 칼로리 추이", "📊 전체 기간 평균 비교"])
 
         with tab1:
-            st.markdown("### 학교별 월별 평균 칼로리 변화 추이")
             monthly_avg = df_meals.groupby(["학교명", "연월"])["칼로리"].mean().round(1).reset_index()
-            
             fig_line = px.line(
-                monthly_avg,
-                x="연월",
-                y="칼로리",
-                color="학교명",
-                markers=True,
-                title="2025년 3월 이후 월별 평균 칼로리 변화",
-                labels={"연월": "조회 월", "칼로리": "평균 칼로리 (kcal)"}
+                monthly_avg, x="연월", y="칼로리", color="학교명", markers=True,
+                title="월별 평균 칼로리 변화 추이"
             )
-            fig_line.update_layout(hovermode="x unified")
             st.plotly_chart(fig_line, use_container_width=True)
 
         with tab2:
-            st.markdown("### 학교별 전체 기간 평균 칼로리 비교")
             fig_bar = px.bar(
-                avg_cal_by_school,
-                x="학교명",
-                y="평균 칼로리(kcal)",
-                color="학교명",
-                text="평균 칼로리(kcal)",
-                title="선택한 학교들의 전체 기간 평균 칼로리 비교",
-                labels={"평균 칼로리(kcal)": "평균 칼로리 (kcal)"}
+                avg_cal_by_school, x="학교명", y="평균 칼로리(kcal)", color="학교명",
+                text="평균 칼로리(kcal)", title="전체 기간 평균 칼로리 비교"
             )
             fig_bar.update_traces(texttemplate='%{text} kcal', textposition='outside')
             st.plotly_chart(fig_bar, use_container_width=True)
 
         st.markdown("---")
 
-        # ---------------------------------------------------------
-        # Section 3: [필수 요구사항 4] 학교별 가장 많이 나온 메뉴 Top 5
-        # ---------------------------------------------------------
-        st.subheader("🏆 학교별 1년간 가장 많이 나온 메뉴 (Top 5)")
-        st.caption("알레르기 정보 번호(예: 1.2.5)를 제거한 후 메뉴별 등판 횟수를 집계했습니다.")
-
+        # 4. Top 5 메뉴
+        st.subheader("🏆 가장 많이 나온 메뉴 Top 5")
         menu_cols = st.columns(len(selected_schools))
         for idx, school in enumerate(selected_schools):
             with menu_cols[idx % len(menu_cols)]:
                 st.markdown(f"#### 🏫 {school}")
                 menus = all_menus.get(school, [])
                 if menus:
-                    counter = Counter(menus)
-                    top5 = counter.most_common(5)
+                    top5 = Counter(menus).most_common(5)
                     df_top5 = pd.DataFrame(top5, columns=["메뉴명", "등장 횟수"])
                     df_top5.index = range(1, len(df_top5) + 1)
                     st.dataframe(df_top5, use_container_width=True)
                 else:
-                    st.info("메뉴 정보가 없습니다.")
-
+                    st.write("메뉴 데이터가 없습니다.")
     else:
-        st.error("해당 기간의 급식 데이터를 불러오지 못했습니다.")
+        st.error("급식 데이터를 가져오지 못했습니다. 학교 이름 또는 기간을 확인해 주세요.")
