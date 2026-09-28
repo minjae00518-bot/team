@@ -13,7 +13,7 @@ st.set_page_config(page_title="5조 - 학교 급식 데이터 분석", page_icon
 # open.neis.go.kr 에서 무료 발급받은 인증키를 아래에 넣으세요.
 # 인증키가 없으면 API 제약으로 인해 최근 5일치 데이터만 조회됩니다.
 # ---------------------------------------------------------
-NEIS_KEY = ""  # 예: "7d11d4f9fde146f29d72b4d314ba3c27"
+NEIS_KEY = "7d11d4f9fde146f29d72b4d314ba3c27"
 
 @st.cache_data(ttl=3600)
 def fetch_school_info(school_name):
