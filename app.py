@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# API Key (발급받은 인증키가 있다면 입력하세요. 없어도 월별 분할 호출로 정상 작동합니다.)
+# API Key (필요시 입력)
 # ---------------------------------------------------------
 NEIS_KEY = ""
 
@@ -60,11 +60,7 @@ def fetch_meal_single_request(ofcdc_code, school_code, from_ymd, to_ymd):
 
 @st.cache_data(ttl=3600)
 def fetch_full_year_meals(ofcdc_code, school_code, start_ymd, end_ymd):
-    """
-    [핵심 개선] 인증키 없을 때 5건 제한 문제 해결
-    - 키가 있으면 전체 기간 1회 요청
-    - 키가 없으면 월별로 분할 요청하여 1년 전체 급식 데이터 확보
-    """
+    """월별 분할 호출로 전체 데이터 확보"""
     if NEIS_KEY:
         return fetch_meal_single_request(ofcdc_code, school_code, start_ymd, end_ymd)
     
@@ -85,7 +81,6 @@ def fetch_full_year_meals(ofcdc_code, school_code, start_ymd, end_ymd):
             m_end_dt = end_dt
         m_end = m_end_dt.strftime("%Y%m%d")
         
-        # 월별 조회
         rows = fetch_meal_single_request(ofcdc_code, school_code, m_start, m_end)
         if rows:
             all_rows.extend(rows)
@@ -98,9 +93,9 @@ def clean_menu_item(item):
     """괄호 안 알레르기/원산지/영양표시 제거 및 특수문자 정제"""
     if not item:
         return ""
-    item = re.sub(r'\(.*?\)', '', item)  # 괄호와 괄호 안 내용 삭제
-    item = re.sub(r'[*.:@#$%\^&;`~]', '', item)  # 특수기호 삭제
-    item = re.sub(r'\s+', ' ', item).strip()  # 다중 공백 정리
+    item = re.sub(r'\(.*?\)', '', item)
+    item = re.sub(r'[*.:@#$%\^&;`~]', '', item)
+    item = re.sub(r'\s+', ' ', item).strip()
     return item
 
 def parse_calories(cal_str):
@@ -110,7 +105,7 @@ def parse_calories(cal_str):
     match = re.search(r'[\d.]+', str(cal_str))
     if match:
         val = float(match.group())
-        if 200 <= val <= 2000:  # 정상 중식 칼로리 범위만 반영
+        if 200 <= val <= 2000:
             return val
     return None
 
@@ -122,7 +117,6 @@ st.caption("5조 프로젝트 - NEIS 급식 API 데이터 기반 시각화")
 
 st.sidebar.header("⚙️ 분석 설정")
 
-# 학년도 선택
 year_option = st.sidebar.selectbox("조회 대상 학년도", ["2025학년도 (2025.03 ~)", "2024학년도 (2024.03 ~ 2025.02)"])
 if "2025" in year_option:
     start_date = "20250301"
@@ -131,7 +125,6 @@ else:
     start_date = "20240301"
     end_date = "20250228"
 
-# 학교 선택 목록 (실제 송탄/평택 지역 고등학교)
 real_schools = [
     "송탄고등학교",
     "효명고등학교",
@@ -141,14 +134,12 @@ real_schools = [
     "비전고등학교"
 ]
 
-# [필수 조건 2] 기본값 송탄고등학교, 최소 3개 선택
 selected_schools = st.sidebar.multiselect(
     "비교할 학교를 선택하세요 (기본: 송탄고등학교 포함):",
     options=real_schools,
     default=["송탄고등학교", "효명고등학교", "라온고등학교"]
 )
 
-# 기본 반찬 제외 옵션
 filter_basic = st.sidebar.checkbox("Top 5 분석 시 기본 반찬(밥/김치류) 제외하기", value=True)
 basic_keywords = ["김치", "밥", "깍두기", "쌀밥", "현미밥", "잡곡밥", "알타리"]
 
@@ -162,7 +153,7 @@ if selected_schools:
     all_meals = []
     all_menus = {}
 
-    with st.spinner("NEIS API에서 학교별 데이터를 월별로 정밀 분석 중입니다..."):
+    with st.spinner("데이터 분석 중..."):
         for school_name in selected_schools:
             info = fetch_school_info(school_name)
             if not info:
@@ -203,9 +194,6 @@ if selected_schools:
     df_meals = pd.DataFrame(all_meals)
 
     if not df_meals.empty:
-        # 데이터 수집 현황 표시
-        st.success(f"✅ 총 {len(df_meals)}일 치의 급식 데이터 수집 및 통계 반영 완료!")
-
         # ---------------------------------------------------------
         # 1. 평균 칼로리 지표
         # ---------------------------------------------------------
@@ -218,17 +206,15 @@ if selected_schools:
             s_df = df_meals[df_meals["학교명"] == school]
             if not s_df.empty:
                 val = round(s_df["칼로리"].mean(), 1)
-                count = len(s_df)
                 cols[idx % len(cols)].metric(
                     label=f"🏫 {school}",
-                    value=f"{val} kcal",
-                    delta=f"수집 데이터 {count}일분"
+                    value=f"{val} kcal"
                 )
 
         st.markdown("---")
 
         # ---------------------------------------------------------
-        # 2. [필수 조건 1] Plotly 시각화
+        # 2. Plotly 시각화
         # ---------------------------------------------------------
         st.subheader("📈 칼로리 시각화 분석")
         tab1, tab2 = st.tabs(["월별 평균 칼로리 추이 (선 그래프)", "전체 기간 평균 칼로리 비교 (막대 그래프)"])
